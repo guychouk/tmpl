@@ -82,7 +82,9 @@ func EnsureDir(dirName string) error {
 
 func main() {
   var outputDir string
+  var templatesFile string
   flag.StringVar(&outputDir, "output", "./public", "Output directory for the HTML files")
+  flag.StringVar(&templatesFile, "templates", "./templates.html", "A file that contains all of the templates")
   flag.Parse()
   args := flag.Args()
   if len(args) < 1 {
@@ -97,7 +99,7 @@ func main() {
   if err != nil {
     log.Fatal(err)
   }
-  templates, err := template.ParseFiles("templates.html")
+  templates, err := template.ParseFiles(templatesFile)
   if err != nil {
     log.Fatal("Error parsing templates: ", err)
   }
