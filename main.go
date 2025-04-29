@@ -1,197 +1,286 @@
 package main
 
 import (
-  "os"
-  "fmt"
-  "log"
-  "flag"
-  "time"
-  "sort"
-  "math"
-  "sync"
-  "bufio"
-  "bytes"
-  "strings"
-  "path/filepath"
-  "html/template"
+	"bytes"
+	"flag"
+	"fmt"
+	"html/template"
+	"log"
+	"math"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 
-  "github.com/yuin/goldmark"
-  "github.com/yuin/goldmark/parser"
-  "github.com/yuin/goldmark-meta"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark-meta"
+	"github.com/yuin/goldmark/parser"
 
-  highlighting "github.com/yuin/goldmark-highlighting/v2"
-  chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
+	chromahtml "github.com/alecthomas/chroma/v2/formatters/html"
+	highlighting "github.com/yuin/goldmark-highlighting/v2"
 )
 
+type Config struct {
+	OutputDir      string
+	TemplatesFile  string
+	NotesDir       string
+	WordsPerMinute int
+	MaxWorkers     int
+}
+
+type TemplateError struct {
+	Op  string
+	Err error
+}
+
 type Note struct {
-  Name string
-  Content template.HTML
-  Title string
-  Date string
-  ReadingTime int
+	Name        string
+	Content     template.HTML
+	Title       string
+	Date        string
+	ReadingTime int
+}
+
+func (e *TemplateError) Error() string {
+	return fmt.Sprintf("template operation %s failed: %v", e.Op, e.Err)
 }
 
 func FormatDate(dateString string) (string, error) {
-  inputFormat := "2006-01-02"
-  outputFormat := "01/02/06"
-  parsedTime, err := time.Parse(inputFormat, dateString)
-  if err != nil {
-    return "", err
-  }
-  return parsedTime.Format(outputFormat), nil
+	inputFormat := "2006-01-02"
+	outputFormat := "01/02/06"
+	parsedTime, err := time.Parse(inputFormat, dateString)
+	if err != nil {
+		return "", err
+	}
+	return parsedTime.Format(outputFormat), nil
 }
 
 func CalculateReadingTime(buf *bytes.Buffer) int {
-  wordsPerMinute := 200
-  words := len(strings.Fields(buf.String()))
-  readingTime := float64(words) / float64(wordsPerMinute)
-  return int(math.Ceil(readingTime))
+	wordsPerMinute := 200
+	words := len(strings.Fields(buf.String()))
+	readingTime := float64(words) / float64(wordsPerMinute)
+	return int(math.Ceil(readingTime))
 }
 
-func RemoveDuplicateLinesInPlace(input *bytes.Buffer) error {
-  scanner := bufio.NewScanner(input)
-  seen := make(map[string]bool)
-  var output bytes.Buffer
-  for scanner.Scan() {
-    line := scanner.Text()
-    if _, exists := seen[line]; !exists {
-      seen[line] = true
-      output.WriteString(line + "\n")
-    }
-  }
-  if err := scanner.Err(); err != nil {
-    return err
-  }
-  input.Reset()
-  input.Write(output.Bytes())
-  return nil
+type CSSCollector struct {
+	mu    sync.Mutex
+	seen  map[string]struct{}
+	rules []string
+}
+
+func NewCSSCollector() *CSSCollector {
+	return &CSSCollector{
+		seen: make(map[string]struct{}),
+	}
+}
+
+// Write implements io.Writer and collects unique CSS blocks
+func (c *CSSCollector) Write(p []byte) (n int, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	css := string(p)
+	// Split by closing brace, which ends a CSS rule
+	blocks := strings.Split(css, "}")
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block == "" {
+			continue
+		}
+		block = block + "}" // Add the closing brace back
+		if _, exists := c.seen[block]; !exists {
+			c.seen[block] = struct{}{}
+			c.rules = append(c.rules, block)
+		}
+	}
+	return len(p), nil
+}
+
+// CSS returns the deduplicated CSS as a string, preserving order
+func (c *CSSCollector) CSS() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Join(c.rules, "\n\n")
+}
+
+func (c *CSSCollector) WriteToFile(outputDir string) error {
+	cssPath := filepath.Join(outputDir, "highlight.css")
+	return os.WriteFile(cssPath, []byte(c.CSS()), 0666)
 }
 
 func EnsureDir(dirName string) error {
-  if _, err := os.Stat(dirName); os.IsNotExist(err) {
-    err := os.MkdirAll(dirName, 0755)
-    if err != nil {
-      return err
-    }
-    fmt.Println("Directory created:", dirName)
-  } else {
-    fmt.Println("Directory already exists:", dirName)
-  }
-  return nil
+	if _, err := os.Stat(dirName); os.IsNotExist(err) {
+		err := os.MkdirAll(dirName, 0755)
+		if err != nil {
+			return err
+		}
+		fmt.Println("Directory created:", dirName)
+	} else {
+		fmt.Println("Directory already exists:", dirName)
+	}
+	return nil
+}
+
+func DefaultConfig() Config {
+	return Config{
+		OutputDir:     "./public",
+		TemplatesFile: "./templates.html",
+		MaxWorkers:    5,
+	}
+}
+
+func (c Config) Validate() error {
+	if c.OutputDir == "" {
+		return fmt.Errorf("output directory cannot be empty")
+	}
+	if c.TemplatesFile == "" {
+		return fmt.Errorf("templates file cannot be empty")
+	}
+	if c.NotesDir == "" {
+		return fmt.Errorf("notes directory cannot be empty")
+	}
+	if c.MaxWorkers < 1 {
+		return fmt.Errorf("workers must be greater than 0")
+	}
+	return nil
+}
+
+func ParseConfig() (Config, error) {
+	cfg := DefaultConfig()
+	flag.StringVar(&cfg.OutputDir, "output", cfg.OutputDir, "Output directory for the HTML files")
+	flag.StringVar(&cfg.TemplatesFile, "templates", cfg.TemplatesFile, "A file that contains all of the templates")
+	flag.IntVar(&cfg.MaxWorkers, "workers", cfg.MaxWorkers, "Maximum number of concurrent workers")
+	flag.Parse()
+	args := flag.Args()
+	if len(args) < 1 {
+		return cfg, fmt.Errorf("missing required notes directory argument")
+	}
+	cfg.NotesDir = args[0]
+	if err := cfg.Validate(); err != nil {
+		return cfg, fmt.Errorf("invalid configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+func ProcessNote(file os.DirEntry, notesDir string, markdown goldmark.Markdown) (Note, error) {
+	var buf bytes.Buffer
+	noteMd, err := os.ReadFile(filepath.Join(notesDir, file.Name()))
+	if err != nil {
+		return Note{}, fmt.Errorf("reading file: %w", err)
+	}
+	context := parser.NewContext()
+	if err := markdown.Convert(noteMd, &buf, parser.WithContext(context)); err != nil {
+		return Note{}, fmt.Errorf("converting markdown: %w", err)
+	}
+	metaData := meta.Get(context)
+	noteDate, err := FormatDate(metaData["date"].(string))
+	if err != nil {
+		return Note{}, fmt.Errorf("formatting date: %w", err)
+	}
+	note := Note{
+		Name:        strings.TrimSuffix(file.Name(), ".md"),
+		Content:     template.HTML(buf.String()),
+		Title:       metaData["title"].(string),
+		Date:        noteDate,
+		ReadingTime: CalculateReadingTime(&buf),
+	}
+	return note, nil
 }
 
 func main() {
-  var outputDir string
-  var templatesFile string
-  flag.StringVar(&outputDir, "output", "./public", "Output directory for the HTML files")
-  flag.StringVar(&templatesFile, "templates", "./templates.html", "A file that contains all of the templates")
-  flag.Parse()
-  args := flag.Args()
-  if len(args) < 1 {
-    log.Fatal("Error: Please provide a directory of notes")
-  }
-  err := EnsureDir(outputDir)
-  if err != nil {
-    fmt.Println("Error creating directory:", err)
-  }
-  notesDir := args[0]
-  files, err := os.ReadDir(notesDir)
-  if err != nil {
-    log.Fatal(err)
-  }
-  templates, err := template.ParseFiles(templatesFile)
-  if err != nil {
-    log.Fatal("Error parsing templates: ", err)
-  }
-  var notes []Note
-  var css bytes.Buffer
-  var wg sync.WaitGroup
-  var mutex sync.Mutex
-  var notesMutex sync.Mutex
-  markdown := goldmark.New(
-    goldmark.WithExtensions(
-      meta.Meta,
-      highlighting.NewHighlighting(
-        highlighting.WithStyle("onedark"),
-        highlighting.WithCSSWriter(&css),
-        highlighting.WithFormatOptions(
-          chromahtml.WithClasses(true),
-          chromahtml.WithLineNumbers(false),
-        ),
-      ),
-    ),
-  )
-  for _, file := range files {
-    wg.Add(1)
-    go func(file os.DirEntry) {
-      defer wg.Done()
-      var buf bytes.Buffer
-      noteMd, err := os.ReadFile(filepath.Join(notesDir, file.Name()))
-      if err != nil {
-        log.Fatal(err)
-      }
-      context := parser.NewContext()
-      if err := markdown.Convert([]byte(noteMd), &buf, parser.WithContext(context)); err != nil {
-        panic(err)
-      }
-      metaData := meta.Get(context)
-      noteDate, err := FormatDate(metaData["date"].(string))
-      if err != nil {
-        panic(err)
-      }
-      mutex.Lock()
-      err = RemoveDuplicateLinesInPlace(&css)
-      if err != nil {
-        log.Fatal("Error removing duplicates:", err)
-      }
-      mutex.Unlock()
-      note := Note{
-        Name: strings.TrimSuffix(file.Name(), ".md"),
-        Content: template.HTML(buf.String()),
-        Title: metaData["title"].(string),
-        Date: noteDate,
-        ReadingTime: CalculateReadingTime(&buf),
-      }
-      notesMutex.Lock()
-      notes = append(notes, note)
-      notesMutex.Unlock()
-      noteHtmlFile, err := os.Create(filepath.Join(outputDir, note.Name + ".html"))
-      if err != nil {
-        log.Fatal(err)
-      }
-      defer noteHtmlFile.Close()
-      err = templates.ExecuteTemplate(noteHtmlFile, "NotePage", note)
-      if err != nil {
-        log.Fatal("Error executing template: ", err)
-      }
-    }(file)
-  }
-  wg.Wait()
-  sort.Slice(notes, func(i, j int) bool {
-    dateI, _ := time.Parse("01/02/06", notes[i].Date)
-    dateJ, _ := time.Parse("01/02/06", notes[j].Date)
-    return dateI.After(dateJ)
-  })
-  indexHtmlFile, err := os.Create(filepath.Join(outputDir, "index.html"))
-  if err != nil {
-    log.Fatal(err)
-  }
-  defer indexHtmlFile.Close()
-  err = templates.ExecuteTemplate(indexHtmlFile, "Index", notes)
-  if err != nil {
-    log.Fatal(err)
-  }
-  aboutHtmlFile, err := os.Create(filepath.Join(outputDir, "about.html"))
-  if err != nil {
-    log.Fatal(err)
-  }
-  defer aboutHtmlFile.Close()
-  err = templates.ExecuteTemplate(aboutHtmlFile, "About", notes)
-  if err != nil {
-    log.Fatal(err)
-  }
-  err = os.WriteFile(filepath.Join(outputDir, "highlight.css"), css.Bytes(), 0666)
-  if err != nil {
-    log.Fatal(err)
-  }
+	cfg, err := ParseConfig()
+
+	if err != nil {
+		log.Fatalf("Error parsing configuration: %v", err)
+	}
+	if err := EnsureDir(cfg.OutputDir); err != nil {
+		log.Fatalf("Error creating output directory: %v", err)
+	}
+	files, err := os.ReadDir(cfg.NotesDir)
+	if err != nil {
+		log.Fatalf("Error reading notes directory: %v", err)
+	}
+	templates, err := template.ParseFiles(cfg.TemplatesFile)
+	if err != nil {
+		log.Fatalf("Error parsing templates: %v", err)
+	}
+
+	cssCollector := NewCSSCollector()
+
+	md := goldmark.New(
+		goldmark.WithExtensions(
+			meta.Meta,
+			highlighting.NewHighlighting(
+				highlighting.WithStyle("onedark"),
+				highlighting.WithCSSWriter(cssCollector),
+				highlighting.WithFormatOptions(
+					chromahtml.WithClasses(true),
+					chromahtml.WithLineNumbers(false),
+				),
+			),
+		),
+	)
+
+	var notes []Note
+	var wg sync.WaitGroup
+	var notesMutex sync.Mutex
+
+	for _, file := range files {
+		wg.Add(1)
+		go func(file os.DirEntry) {
+			defer wg.Done()
+			note, err := ProcessNote(file, cfg.NotesDir, md)
+			if err != nil {
+				log.Printf("Error processing %s: %v", file.Name(), err)
+				return
+			}
+			notesMutex.Lock()
+			notes = append(notes, note)
+			notesMutex.Unlock()
+		}(file)
+	}
+	wg.Wait()
+
+	sort.Slice(notes, func(i, j int) bool {
+		dateI, _ := time.Parse("01/02/06", notes[i].Date)
+		dateJ, _ := time.Parse("01/02/06", notes[j].Date)
+		return dateI.After(dateJ)
+	})
+	for _, note := range notes {
+		noteHtmlFile, err := os.Create(filepath.Join(cfg.OutputDir, note.Name + ".html"))
+		if err != nil {
+			log.Printf("Error creating HTML file for %s: %v", note.Name, err)
+			continue
+		}
+		if err := templates.ExecuteTemplate(noteHtmlFile, "NotePage", note); err != nil {
+			log.Printf("Error executing template for %s: %v", note.Name, err)
+		}
+		noteHtmlFile.Close()
+	}
+
+	indexHtmlFile, err := os.Create(filepath.Join(cfg.OutputDir, "index.html"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer indexHtmlFile.Close()
+	err = templates.ExecuteTemplate(indexHtmlFile, "Index", notes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	aboutHtmlFile, err := os.Create(filepath.Join(cfg.OutputDir, "about.html"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer aboutHtmlFile.Close()
+	err = templates.ExecuteTemplate(aboutHtmlFile, "About", notes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := cssCollector.WriteToFile(cfg.OutputDir); err != nil {
+		log.Fatalf("Error writing highlight.css: %v", err)
+	}
 }
