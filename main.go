@@ -76,7 +76,6 @@ func NewCSSCollector() *CSSCollector {
 	}
 }
 
-// Write implements io.Writer and collects unique CSS blocks
 func (c *CSSCollector) Write(p []byte) (n int, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -98,7 +97,6 @@ func (c *CSSCollector) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// CSS returns the deduplicated CSS as a string, preserving order
 func (c *CSSCollector) CSS() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
