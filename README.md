@@ -1,6 +1,6 @@
 # Temple 🕍
 
-A minimal, concurrent static site generator that transforms your Markdown notes into beautiful HTML pages. Built with Go's excellent templating and markdown packages, Temple provides a lightweight alternative to heavy static site generators. This is what I use as a templating "engine" for the notes on [my website](https://guycho.uk).
+Temple is a minimal, concurrent static site generator that transforms Markdown notes into HTML pages. Built with Go’s excellent templating package and a couple of other packages, it offers a (limited) lightweight alternative to heavier tools like [Hugo](https://github.com/gohugoio/hugo). I use Temple as the templating engine for the notes on [my website](https://guycho.uk).
 
 ## Features
 
@@ -80,7 +80,18 @@ Then visit `http://localhost:8000` in your browser to see the generated site.
 
 ## How It Works
 
-All `tmpl` does is it reads a directory with Markdown files (which may include a [YAML frontmatter](https://pandoc.org/MANUAL.html#extension-yaml_metadata_block)), maps each `.md` file to a `Note` struct, reads the HTML templates defined in the provided file, and finally generates HTML files along with a CSS file for syntax highlighting in code blocks.
+All `tmpl` does is it reads a directory with Markdown files, maps each `.md` file to a `Note` struct, reads the HTML templates defined in the provided file, and finally generates HTML files along with a CSS file for syntax highlighting in code blocks.
+
+Each note is expected to have a [YAML frontmatter](https://pandoc.org/MANUAL.html#extension-yaml_metadata_block) with the following fields:
+
+```md
+---
+title: A meaningful title
+date: YYYY-MM-DD
+---
+
+your note here 
+```
 
 1. The program reads Markdown files from the specified directory
 2. Each file is processed concurrently:
@@ -99,11 +110,3 @@ All `tmpl` does is it reads a directory with Markdown files (which may include a
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-This is a minimal replacement for static site generators such as [hugo](https://github.com/gohugoio/hugo).
-
-I sat down to write this thinking it's gonna be difficult, but thanks to go's excellent [html/template pkg](https://pkg.go.dev/html/template), and packages like [goldmark](https://github.com/yuin/goldmark) and [chroma](https://github.com/alecthomas/chroma), it was too damn easy ¯\\_(ツ)_/¯.
-
-Read the code and see for yourself.
