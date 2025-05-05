@@ -4,11 +4,11 @@ A minimal, concurrent static site generator that transforms your Markdown notes 
 
 ## Features
 
-- Markdown to HTML conversion with YAML frontmatter support
-- Syntax highlighting for code blocks
-- Custom HTML templates
+- Markdown parsing (using [goldmark](https://github.com/yuin/goldmark)) and conversion to HTML (with YAML frontmatter support)
+- Syntax highlighting for code blocks using [chroma](https://github.com/alecthomas/chroma)
+- Custom HTML templates using go's [html/template](https://pkg.go.dev/html/template)
 - Concurrent processing of notes
-- Deduplicated CSS output
+- Deduplicated CSS output for the syntax highlighting
 
 ## Prerequisites
 
